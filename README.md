@@ -14,4 +14,4 @@ Feedback
 ====================
 tidb-syncer is still in development, your feedback is very welcome.
 
-Gmail: [wangxy086@gmail.com](wangxy086@gmail.com)
+Gmail: [wangxy086@gmail.com](mailto:wangxy086@gmail.com)

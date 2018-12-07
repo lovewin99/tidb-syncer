@@ -1,0 +1,52 @@
+replicate-do-db = ["eric"]
+
+log-level = "debug"
+worker-count = 2
+batch = 10
+status-addr = "127.0.0.1:10090"
+
+server-id = 101
+
+meta = "./syncer.meta"
+
+#skip-ddls = ["ALTER\\s+TABLE\\s+\\S+\\s+MODIFY","ALTER\\s+TABLE\\s+\\S+\\s+CHANGE", "CREATE USER"]
+#replicate-do-db = ["eric"]
+
+[from]
+host = "127.0.0.1"
+user = "root"
+password = "xxx"
+port = 3306
+
+[to]
+host = "127.0.0.1"
+user = "root"
+password = "xxx"
+port = 4000
+
+#[[skip-dmls]]
+#db-name = "eric"
+#tbl-name = "t1"
+#type = "delete"
+#
+#[[skip-dmls]]
+#db-name = "eric"
+#tbl-name = "t2"
+#type = "update"
+
+#[[replicate-do-table]]
+#db-name ="eric"
+#tbl-name = "~t2.*"
+
+[[route-rules]]
+pattern-schema = "eric"
+target-schema = "test"
+#[[route-rules]]
+#pattern-schema = "test"
+#pattern-table = "time.*"
+#target-schema = "test"
+#target-table = "time"
+
+#[[replicate-ignore-table]]
+#db-name = "eric"
+#tbl-name = "t4"

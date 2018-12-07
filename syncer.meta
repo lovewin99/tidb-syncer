@@ -1,0 +1,3 @@
+binlog-name = "mysql-bin.000004"
+binlog-pos = 48630
+binlog-gtid = ""

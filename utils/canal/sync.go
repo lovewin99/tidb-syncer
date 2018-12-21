@@ -1,11 +1,11 @@
 package canal
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
-	"time"
 	"strings"
-	"bytes"
+	"time"
 
 	"github.com/juju/errors"
 	"github.com/satori/go.uuid"
@@ -19,10 +19,10 @@ var (
 	expCreateTable = regexp.MustCompile("(?i)(^CREATE\\s+TABLE)(\\s+IF\\s+NOT\\s+EXISTS){0,1}\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s*(\\(.*)")
 	expAlterTable  = regexp.MustCompile("(?i)(^ALTER\\s+(IGNORE\\s+){0,1}TABLE)\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(DROP|ADD|RENAME|CHANGE|MODIFY|ALTER)\\s+(.*)")
 	//expRenameTable = regexp.MustCompile("(?i)(^RENAME\\s+TABLE\\s+.*?)`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}(\\s+TO\\s.*?)")
-	expDropTable   = regexp.MustCompile("(?i)(^DROP\\s+TABLE)(\\s+IF\\s+EXISTS){0,1}\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(.*)")
+	expDropTable       = regexp.MustCompile("(?i)(^DROP\\s+TABLE)(\\s+IF\\s+EXISTS){0,1}\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(.*)")
 	expTruncateTable   = regexp.MustCompile("(?i)(TRUNCATE)(\\s+TABLE){0,1}\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+)`{0,1}\\s+")
 	expCreateLikeTable = regexp.MustCompile("(?i)(^CREATE\\s+TABLE)(\\s+IF\\s+NOT\\s+EXISTS){0,1}\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(LIKE)\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(.*)")
-	expCreateIndex = regexp.MustCompile("(?i)(^CREATE\\s+INDEX\\s+[^`\\.]+?\\s+ON)\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s*(\\(\\s*`{0,1}.*?`{0,1}\\s*\\)\\s*)")
+	expCreateIndex     = regexp.MustCompile("(?i)(^CREATE\\s+INDEX\\s+[^`\\.]+?\\s+ON)\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s*(\\(\\s*`{0,1}.*?`{0,1}\\s*\\)\\s*)")
 )
 
 func (c *Canal) startSyncer() (*replication.BinlogStreamer, error) {
@@ -51,8 +51,8 @@ func DelComments(str string) (string, error) {
 	mb := []rune(str)
 	flag := true
 	isFirst := true
-	for i := 0; i < len(mb) - 1; i++{
-		if string(mb[i]) == "/" && string(mb[i+1]) == "*"{
+	for i := 0; i < len(mb)-1; i++ {
+		if string(mb[i]) == "/" && string(mb[i+1]) == "*" {
 			flag = false
 			if tbuf.Len() != 0 {
 				buf.Write(tbuf.Bytes())
@@ -60,15 +60,15 @@ func DelComments(str string) (string, error) {
 			}
 			tbuf.WriteString(string(mb[i]))
 			i++
-			if i < len(mb){
+			if i < len(mb) {
 				tbuf.WriteString(string(mb[i]))
 			}
 			continue
-		}else if string(mb[i]) == "*" && string(mb[i+1])  == "/" {
+		} else if string(mb[i]) == "*" && string(mb[i+1]) == "/" {
 			tbuf.Reset()
 			flag = true
 			i++
-			if !isFirst{
+			if !isFirst {
 				buf.WriteString(" ")
 			}
 			continue
@@ -76,7 +76,7 @@ func DelComments(str string) (string, error) {
 
 		if !flag {
 			tbuf.WriteString(string(mb[i]))
-			if i == len(mb) - 2 {
+			if i == len(mb)-2 {
 				tbuf.WriteString(string(mb[i+1]))
 			}
 		}
@@ -84,7 +84,7 @@ func DelComments(str string) (string, error) {
 		if flag && (!isFirst || string(mb[i]) != " ") {
 			isFirst = false
 			buf.WriteString(string(mb[i]))
-			if i == len(mb) - 2 {
+			if i == len(mb)-2 {
 				buf.WriteString(string(mb[i+1]))
 			}
 		}
@@ -194,11 +194,12 @@ func (c *Canal) runSyncBinlog() error {
 			}
 
 			var (
-				mb    [][]byte
-				db    []byte
-				table []byte
-				prefix	[][]byte
-				suffix	[][]byte
+				mb      [][]byte
+				db      []byte
+				table   []byte
+				prefix  [][]byte
+				suffix  [][]byte
+				newInfo []string
 			)
 
 			const (
@@ -212,7 +213,6 @@ func (c *Canal) runSyncBinlog() error {
 			regexps := []regexp.Regexp{*expCreateTable, *expAlterTable, *expDropTable, *expTruncateTable, *expCreateLikeTable, *expCreateIndex}
 
 			isDrop := false
-			isChanged := false
 
 			log.Debugf("e.query = %v$", string(e.Query))
 			query, _ := DelComments(string(e.Query))
@@ -223,76 +223,76 @@ func (c *Canal) runSyncBinlog() error {
 					switch i {
 					case Create:
 						log.Debugf("create sql = %v", string(mb[0]))
-						if len(mb[3]) == 0{
+						if len(mb[3]) == 0 {
 							db = e.Schema
-						}else{
-							db	= mb[3]
+						} else {
+							db = mb[3]
 						}
-						table	= mb[4]
-						prefix	= [][]byte{mb[1]}
-						prefix	= append(prefix, []byte("if not exists"))
-						suffix	= mb[5:]
+						table = mb[4]
+						prefix = [][]byte{mb[1]}
+						prefix = append(prefix, []byte("if not exists"))
+						suffix = mb[5:]
 					case Alter:
 						log.Debugf("alter sql = %v", string(mb[0]))
 
 						// TODO drop primary key
 						switch strings.ToLower(string(mb[5])) {
 						case "rename":
-							isChanged = true
+							//isChanged = true
 							isDrop = true
 						default:
 						}
 
 						var err error
-						db, table, prefix, suffix, err = c.eventHandler.OnDDLAlter(mb, e.Schema)
+						db, table, prefix, suffix, newInfo, err = c.eventHandler.OnDDLAlter(mb, e.Schema)
 						if err != nil {
-							if err.Error() == "skip"{
+							if err.Error() == "skip" {
 								log.Infof("skip alter ddl: %v", string(mb[0]))
 								mb = [][]byte{}
-							}else if err.Error() == "not match"{
+							} else if err.Error() == "not match" {
 								mb = [][]byte{}
-							}else{
+							} else {
 								return err
 							}
 						}
 					case Drop:
 						log.Debugf("drop sql = %v", string(mb[0]))
-						if len(mb[3]) == 0{
+						if len(mb[3]) == 0 {
 							db = e.Schema
-						}else{
-							db	= mb[3]
+						} else {
+							db = mb[3]
 						}
-						table	= mb[4]
-						prefix	= [][]byte{mb[1]}
-						prefix	= append(prefix, []byte("if exists"))
-						suffix	= [][]byte{}
-						isDrop	= true
+						table = mb[4]
+						prefix = [][]byte{mb[1]}
+						prefix = append(prefix, []byte("if exists"))
+						suffix = [][]byte{}
+						isDrop = true
 					case Truncate:
 						log.Debugf("truncate sql = %v", string(mb[0]))
-						if len(mb[3]) == 0{
+						if len(mb[3]) == 0 {
 							db = e.Schema
-						}else{
-							db	= mb[3]
+						} else {
+							db = mb[3]
 						}
-						table	= mb[4]
-						prefix	= mb[1:3]
-						suffix	= [][]byte{}
+						table = mb[4]
+						prefix = mb[1:3]
+						suffix = [][]byte{}
 					case CreateLike:
 						log.Debugf("CreateLike sql = %v", string(mb[0]))
 						//ts := "(?i)(^CREATE\\s+TABLE)(\\s+IF\\s+NOT\\s+EXISTS){0,1}\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(LIKE)\\s+`{0,1}(.*?)`{0,1}\\.{0,1}`{0,1}([^`\\.]+?)`{0,1}\\s+(.*)"
 
-						if len(mb[3]) == 0{
+						if len(mb[3]) == 0 {
 							db = e.Schema
-						}else{
-							db	= mb[3]
+						} else {
+							db = mb[3]
 						}
-						table	= mb[4]
+						table = mb[4]
 						var likedb string
 
 						// get like db&table
-						if len(mb[6]) == 0{
+						if len(mb[6]) == 0 {
 							likedb = string(e.Schema)
-						}else {
+						} else {
 							likedb = string(mb[6])
 						}
 						liketb := string(mb[7])
@@ -312,19 +312,19 @@ func (c *Canal) runSyncBinlog() error {
 						// Execute the logic of create table
 						mb = (*expCreateTable).FindSubmatch([]byte(strings.Replace(query1+" ", "\n", " ", -1)))
 						log.Debugf("create sql = %v", string(mb[0]))
-						prefix	= [][]byte{mb[1]}
-						prefix	= append(prefix, []byte("if not exists"))
-						suffix	= mb[5:]
+						prefix = [][]byte{mb[1]}
+						prefix = append(prefix, []byte("if not exists"))
+						suffix = mb[5:]
 					case CreateIndex:
 						log.Debugf("CreateIndex sql = %v", string(mb[0]))
-						if len(mb[2]) == 0{
+						if len(mb[2]) == 0 {
 							db = e.Schema
-						}else{
-							db	= mb[2]
+						} else {
+							db = mb[2]
 						}
-						table	= mb[3]
-						prefix	= [][]byte{mb[1]}
-						suffix	= [][]byte{mb[4]}
+						table = mb[3]
+						prefix = [][]byte{mb[1]}
+						suffix = [][]byte{mb[4]}
 					}
 					break
 				}
@@ -335,7 +335,7 @@ func (c *Canal) runSyncBinlog() error {
 			}
 
 			key := fmt.Sprintf("%s.%s", string(db), string(table))
-			if !c.CheckTableMatch(key){
+			if !c.CheckTableMatch(key) {
 				log.Debugf("table %v.%v not match !!!", string(db), string(table))
 				continue
 			}
@@ -344,14 +344,14 @@ func (c *Canal) runSyncBinlog() error {
 			force = true
 			c.ClearTableCache(db, table)
 			log.Infof("table structure changed, clear table cache: %s.%s", db, table)
-			if !isChanged{
-				if err = c.eventHandler.OnTableChanged(string(db), string(table)); err != nil {
-					return errors.Trace(err)
-				}
-			}
+			//if !isChanged{
+			//	if err = c.eventHandler.OnTableChanged(string(db), string(table)); err != nil {
+			//		return errors.Trace(err)
+			//	}
+			//}
 
 			// Now we only handle Table Changed DDL, maybe we will support more later.
-			if err = c.eventHandler.OnDDL(&pos, string(db), string(table), prefix, suffix, isDrop); err != nil {
+			if err = c.eventHandler.OnDDL(&pos, string(db), string(table), prefix, suffix, isDrop, newInfo...); err != nil {
 				return errors.Trace(err)
 			}
 		default:

@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"strings"
 
+	"bytes"
 	"github.com/juju/errors"
 	"tidb-syncer/utils/mysql"
-	"bytes"
 )
 
 var ErrTableNotExist = errors.New("table is not exist")
@@ -173,9 +173,9 @@ func (idx *Index) FindColumn(name string) int {
 	return -1
 }
 
-func IsTableExist(conn mysql.Executer, schema string, name string) (bool, error) {
+func IsTableExist(conn mysql.DstExecuter, schema string, name string) (bool, error) {
 	query := fmt.Sprintf("SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = '%s' and TABLE_NAME = '%s' LIMIT 1", schema, name)
-	r, err := conn.Execute(query)
+	r, err := conn.DstExecute(query)
 	if err != nil {
 		return false, errors.Trace(err)
 	}
@@ -202,7 +202,7 @@ func NewTableFromSqlDB(conn *sql.DB, schema string, name string) (*Table, error)
 	return ta, nil
 }
 
-func NewTable(conn mysql.Executer, schema string, name string) (*Table, error) {
+func NewTable(conn mysql.DstExecuter, schema string, name string) (*Table, error) {
 	ta := &Table{
 		Schema:  schema,
 		Name:    name,
@@ -221,8 +221,8 @@ func NewTable(conn mysql.Executer, schema string, name string) (*Table, error) {
 	return ta, nil
 }
 
-func (ta *Table) fetchColumns(conn mysql.Executer) error {
-	r, err := conn.Execute(fmt.Sprintf("show full columns from `%s`.`%s`", ta.Schema, ta.Name))
+func (ta *Table) fetchColumns(conn mysql.DstExecuter) error {
+	r, err := conn.DstExecute(fmt.Sprintf("show full columns from `%s`.`%s`", ta.Schema, ta.Name))
 	if err != nil {
 		return errors.Trace(err)
 	}
@@ -275,8 +275,8 @@ func (ta *Table) fetchColumnsViaSqlDB(conn *sql.DB) error {
 	return r.Err()
 }
 
-func (ta *Table) fetchIndexes(conn mysql.Executer) error {
-	r, err := conn.Execute(fmt.Sprintf("show index from `%s`.`%s`", ta.Schema, ta.Name))
+func (ta *Table) fetchIndexes(conn mysql.DstExecuter) error {
+	r, err := conn.DstExecute(fmt.Sprintf("show index from `%s`.`%s`", ta.Schema, ta.Name))
 	if err != nil {
 		return errors.Trace(err)
 	}

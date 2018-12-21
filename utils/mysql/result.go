@@ -9,6 +9,6 @@ type Result struct {
 	*Resultset
 }
 
-type Executer interface {
-	Execute(query string, args ...interface{}) (*Result, error)
+type DstExecuter interface {
+	DstExecute(query string, args ...interface{}) (*Result, error)
 }

@@ -3,31 +3,31 @@ package river
 import (
 	"strings"
 
-	log "github.com/sirupsen/logrus"
-	"fmt"
 	"database/sql"
-	_ "github.com/go-sql-driver/mysql"
-	"time"
 	"errors"
-	"strconv"
+	"fmt"
+	_ "github.com/go-sql-driver/mysql"
+	log "github.com/sirupsen/logrus"
 	"regexp"
+	"strconv"
+	"time"
 )
 
 const (
-	l_tinyint	= 4
-	l_smallint	= 6
-	l_mediumint	= 9
-	l_int		= 11
-	l_bigint	= 20
-	l_char		= 1
-	l_tinytext	= 255
-	l_text		= 21846
-	l_mediumtext= 16777215
-	l_longtext	= 4294967295
-	l_tinyblob	= 255
-	l_blob		= 65535
-	l_mediumblob= 16777215
-	l_longblob	= 4294967295
+	l_tinyint    = 4
+	l_smallint   = 6
+	l_mediumint  = 9
+	l_int        = 11
+	l_bigint     = 20
+	l_char       = 1
+	l_tinytext   = 255
+	l_text       = 21846
+	l_mediumtext = 16777215
+	l_longtext   = 4294967295
+	l_tinyblob   = 255
+	l_blob       = 65535
+	l_mediumblob = 16777215
+	l_longblob   = 4294967295
 )
 
 var expNum = regexp.MustCompile("\\(([0-9]*)\\)")
@@ -35,7 +35,6 @@ var expNum = regexp.MustCompile("\\(([0-9]*)\\)")
 func ruleKey(schema string, table string) string {
 	return strings.ToLower(fmt.Sprintf("%s.%s", schema, table))
 }
-
 
 func isValidTables(tables []string) bool {
 	if len(tables) > 1 {
@@ -59,7 +58,7 @@ func ddlexec(db *sql.DB, sql *string) error {
 	var err error
 	_, err = db.Exec(*sql)
 	// connection refused： Retry 100 times
-	for i := 0; i < retryNum && err != nil && strings.Contains(err.Error(), "connection refused"); i++{
+	for i := 0; i < retryNum && err != nil && strings.Contains(err.Error(), "connection refused"); i++ {
 		time.Sleep(3 * time.Second)
 		log.Infof("connect tidb retry 100 times: %v", i+1)
 		_, err = db.Exec(*sql)
@@ -78,7 +77,7 @@ func ddlexec(db *sql.DB, sql *string) error {
 func BatchInsert(db *sql.DB, msgArr *[]*DmlMsg) error {
 
 	var (
-		tx *sql.Tx
+		tx  *sql.Tx
 		err error
 	)
 
@@ -86,7 +85,7 @@ func BatchInsert(db *sql.DB, msgArr *[]*DmlMsg) error {
 		if strings.Contains(err.Error(), "connection refused") {
 			time.Sleep(3 * time.Second)
 			log.Infof("connect tidb retry 100 times: %v", i+1)
-		}else{
+		} else {
 			log.Errorf("sql exec error sql = %v %v, error info = %v", sql, v, err)
 		}
 
@@ -95,7 +94,7 @@ func BatchInsert(db *sql.DB, msgArr *[]*DmlMsg) error {
 	isFirst := true
 
 	for i := 0; i < retryNum && (isFirst || err != nil && (strings.Contains(err.Error(), "connection refused") ||
-		strings.Contains(err.Error(), "bad connection"))); i++{
+		strings.Contains(err.Error(), "bad connection"))); i++ {
 		isFirst = false
 		tx, err = db.Begin()
 		if err != nil {
@@ -118,15 +117,15 @@ func BatchInsert(db *sql.DB, msgArr *[]*DmlMsg) error {
 }
 
 /**
-	Connect to the target database to get the type of each field of the corresponding table
- */
-func fetchColType(db *sql.DB, schema, tb string) (map[string]string, error){
+Connect to the target database to get the type of each field of the corresponding table
+*/
+func fetchColType(db *sql.DB, schema, tb string) (map[string]string, error) {
 
 	sql1 := fmt.Sprintf("show full columns from `%v`.`%v`", schema, tb)
 	var res *sql.Rows
 	var err error
 	res, err = db.Query(sql1)
-	for i := 0; i < retryNum && err != nil && (strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "doesn't exist")); i++{
+	for i := 0; i < retryNum && err != nil && (strings.Contains(err.Error(), "connection refused") || strings.Contains(err.Error(), "doesn't exist")); i++ {
 		time.Sleep(3 * time.Second)
 		log.Infof("connect tidb retry 100 times: %v", i+1)
 		res, err = db.Query(sql1)
@@ -134,7 +133,7 @@ func fetchColType(db *sql.DB, schema, tb string) (map[string]string, error){
 			log.Debugf("%v exec success !!!", sql1)
 		}
 	}
-	if err != nil && !strings.Contains(err.Error(), "connection refused"){
+	if err != nil && !strings.Contains(err.Error(), "connection refused") {
 		// log
 		log.Errorf("sql exec error sql = %v, error info = %v", sql1, err)
 		return nil, err
@@ -158,9 +157,9 @@ func fetchColType(db *sql.DB, schema, tb string) (map[string]string, error){
 			} else {
 				value = string(col)
 			}
-			if cloumns[i] == "Field"{
+			if cloumns[i] == "Field" {
 				k = value
-			}else if cloumns[i] == "Type"{
+			} else if cloumns[i] == "Type" {
 				v = value
 			}
 		}
@@ -195,103 +194,116 @@ func isBlobType(str string) bool {
 		strings.HasPrefix(str, "longblob")
 }
 
-func IsSameType(lstr, rstr string) bool  {
+func IsSameType(lstr, rstr string) bool {
 	return isIntegerType(lstr) && isIntegerType(rstr) ||
 		isCharType(lstr) && isCharType(rstr) ||
 		isBlobType(lstr) && isBlobType(rstr)
 }
 
-
-func TypeLen(typename string) (coltype string, strNum int, err error)  {
+func TypeLen(typename string) (coltype string, strNum int, err error) {
 
 	log.Debugf("TypeLen typename = %v", typename)
+
+	fnAtoi := func(mb [][]byte) (int, error) {
+		n, err := strconv.Atoi(string(mb[1]))
+		if err != nil {
+			err1 := errors.New(fmt.Sprintf("strconv.Atoi %v  err:%v", string(mb[1]), err))
+			log.Error(err1.Error())
+			return n, err1
+		}
+		return n, err
+	}
 
 	mb := expNum.FindSubmatch([]byte(typename))
 	coltype = typename
 	err = nil
+
+	// Assign default values ​​based on type
 	if strings.HasPrefix(typename, "tinyint") {
 		strNum = l_tinyint
-	}else if strings.HasPrefix(typename, "smallint"){
+	} else if strings.HasPrefix(typename, "smallint") {
 		strNum = l_smallint
-	}else if strings.HasPrefix(typename, "mediumint"){
+	} else if strings.HasPrefix(typename, "mediumint") {
 		strNum = l_mediumint
-	}else if strings.HasPrefix(typename, "int"){
+	} else if strings.HasPrefix(typename, "int") {
 		strNum = l_int
-	}else if strings.HasPrefix(typename, "bigint"){
+	} else if strings.HasPrefix(typename, "bigint") {
 		strNum = l_bigint
-	}else if strings.HasPrefix(typename, "char"){
+	} else if strings.HasPrefix(typename, "char") {
 		strNum = l_char
-	}else if strings.HasPrefix(typename, "tinytext"){
+	} else if strings.HasPrefix(typename, "varchar") {
+		if len(mb) != 2 {
+			log.Errorf("unknow error coltype = %v", typename)
+			err = errors.New("varchar no len")
+			return
+		}
+	} else if strings.HasPrefix(typename, "tinytext") {
 		strNum = l_tinytext
-	}else if strings.HasPrefix(typename, "text"){
-		if len(mb) == 2 {
-			var n int
-			n, err = strconv.Atoi(string(mb[1]))
-			if err != nil{
-				log.Errorf("strconv.Atoi %v  err:%v", string(mb[1]), err)
-				return
-			}
-			if n < l_tinytext {
-				coltype = "tinytext"
-				strNum = l_tinytext
-			}else if n < l_text{
-				coltype = "text"
-				strNum = l_text
-			}else if n < l_mediumtext{
-				coltype = "mediumtext"
-				strNum = l_mediumtext
-			}else if n < l_longtext{
-				coltype = "longtext"
-				strNum = l_longtext
-			}else{
-				log.Errorf("unknow error coltype = %v, n = %v", typename, n)
-				err = errors.New("unknow error")
-				return
-			}
-		}else{
-			strNum = l_text
-		}
-	}else if strings.HasPrefix(typename, "mediumtext"){
+	} else if strings.HasPrefix(typename, "text") {
+		strNum = l_text
+	} else if strings.HasPrefix(typename, "mediumtext") {
 		strNum = l_mediumtext
-	}else if strings.HasPrefix(typename, "longtext"){
+	} else if strings.HasPrefix(typename, "longtext") {
 		strNum = l_longtext
-	}else if strings.HasPrefix(typename, "tinyblob"){
+	} else if strings.HasPrefix(typename, "tinyblob") {
 		strNum = l_tinyblob
-	}else if strings.HasPrefix(typename, "blob"){
-		if len(mb) == 2 {
-			var n int
-			n, err = strconv.Atoi(string(mb[1]))
-			if err != nil{
-				log.Errorf("strconv.Atoi %v  err:%v", string(mb[1]), err)
-				return
-			}
-			if n < l_tinyblob {
-				coltype = "tinyblob"
-				strNum = l_tinyblob
-			}else if n < l_blob{
-				coltype = "blob"
-				strNum = l_blob
-			}else if n < l_mediumblob{
-				coltype = "mediumblob"
-				strNum = l_mediumblob
-			}else if n < l_longblob{
-				coltype = "longblob"
-				strNum = l_longblob
-			}else{
-				log.Errorf("unknow error coltype = %v, n = %v", typename, n)
-				err = errors.New("unknow error")
-				return
-			}
-		}else{
-			strNum = l_text
-		}
-	}else if strings.HasPrefix(typename, "mediumblob"){
+	} else if strings.HasPrefix(typename, "blob") {
+		strNum = l_text
+	} else if strings.HasPrefix(typename, "mediumblob") {
 		strNum = l_mediumblob
-	}else if strings.HasPrefix(typename, "longblob"){
+	} else if strings.HasPrefix(typename, "longblob") {
 		strNum = l_longblob
-	}else{
+	} else {
 		log.Errorf("Regular parsing error ColType=%v", typename)
 		err = errors.New("Regular parsing error")
+	}
+
+	if len(mb) == 2 {
+		strNum, err = fnAtoi(mb)
+		if err != nil {
+			return
+		}
+	}
+
+	// Handling special type
+	if strings.HasPrefix(typename, "text") && len(mb) == 2 {
+		n := strNum
+		if n < l_tinytext {
+			coltype = "tinytext"
+			strNum = l_tinytext
+		} else if n < l_text {
+			coltype = "text"
+			strNum = l_text
+		} else if n < l_mediumtext {
+			coltype = "mediumtext"
+			strNum = l_mediumtext
+		} else if n < l_longtext {
+			coltype = "longtext"
+			strNum = l_longtext
+		} else {
+			log.Errorf("unknow error coltype = %v, n = %v", typename, n)
+			err = errors.New("unknow error")
+			return
+		}
+	} else if strings.HasPrefix(typename, "blob") && len(mb) == 2 {
+		n := strNum
+		if n < l_tinyblob {
+			coltype = "tinyblob"
+			strNum = l_tinyblob
+		} else if n < l_blob {
+			coltype = "blob"
+			strNum = l_blob
+		} else if n < l_mediumblob {
+			coltype = "mediumblob"
+			strNum = l_mediumblob
+		} else if n < l_longblob {
+			coltype = "longblob"
+			strNum = l_longblob
+		} else {
+			log.Errorf("unknow error coltype = %v, n = %v", typename, n)
+			err = errors.New("unknow error")
+			return
+		}
 	}
 	return
 }

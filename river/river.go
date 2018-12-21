@@ -3,22 +3,22 @@ package river
 import (
 	"context"
 	"regexp"
-	"strings"
 	"strconv"
+	"strings"
 	"sync"
 
+	"database/sql"
 	"github.com/juju/errors"
 	log "github.com/sirupsen/logrus"
+	"tidb-syncer/utils/canal"
+	"tidb-syncer/utils/mysql"
 	//"tidb-syncer/utils/canal"
 	"fmt"
-	"tidb-syncer/utils/canal"
-	"database/sql"
 	_ "github.com/go-sql-driver/mysql"
-	"tidb-syncer/utils/mysql"
 	"time"
 )
 
-const max_allowed_packet  = 50000000
+const max_allowed_packet = 50000000
 const chan_buffer_size = 4096
 
 type River struct {
@@ -44,13 +44,16 @@ type River struct {
 	barrierCh chan DdlBarrierMsg
 
 	// manager -> task
-	mCh	map[int](chan Msg)
+	mCh map[int](chan Msg)
 
 	// sync -> manager
 	syncCh chan Msg
 
 	// manager/task -> saver
 	saveCh chan SaveBarrierMsg
+
+	// manager -> sync
+	m2sCh chan Msg
 }
 
 // NewRiver creates the River from config
@@ -65,12 +68,14 @@ func NewRiver(c *Config) (*River, error) {
 
 	r.syncCh = make(chan Msg, chan_buffer_size)
 
+	r.m2sCh = make(chan Msg, chan_buffer_size)
+
 	r.barrierCh = make(chan DdlBarrierMsg, c.WorkerCount)
 
 	r.saveCh = make(chan SaveBarrierMsg, chan_buffer_size)
 
 	r.mCh = make(map[int]chan Msg, c.WorkerCount)
-	for i := 0; i < c.WorkerCount; i++{
+	for i := 0; i < c.WorkerCount; i++ {
 		r.mCh[i] = make(chan Msg, chan_buffer_size)
 	}
 
@@ -114,6 +119,9 @@ func (r *River) newCanal() error {
 	cfg.User = r.c.Fromcfg.User
 	cfg.Password = r.c.Fromcfg.Password
 
+	cfg.DstAddr = r.c.Tocfg.Host + ":" + strconv.Itoa(int(r.c.Tocfg.Port))
+	cfg.DstUser = r.c.Tocfg.User
+	cfg.DstPassword = r.c.Tocfg.Password
 
 	cfg.ServerID = r.c.ServerID
 
@@ -121,37 +129,37 @@ func (r *River) newCanal() error {
 		if strings.HasPrefix(db, "~") {
 			db = strings.Replace(db, "~", "", -1)
 			db = strings.Replace(db, "$", "", -1)
-		}else{
+		} else {
 			db = "^" + db
 		}
 		if strings.HasPrefix(tb, "~") {
 			tb = strings.Replace(tb, "~", "", -1)
 			tb = strings.Replace(tb, "^", "", -1)
-		}else if tb != "" {
+		} else if tb != "" {
 			tb = tb + "$"
 		}
 
-		arr = append(arr, db + "\\." + tb)
+		arr = append(arr, db+"\\."+tb)
 		return arr
 	}
 
 	// replicate-do-db
-	for _, v := range r.c.DoDB{
+	for _, v := range r.c.DoDB {
 		cfg.IncludeTableRegex = f(cfg.IncludeTableRegex, v, "")
 	}
 
 	// replicate-do-table
-	for _, s := range r.c.DoTable{
+	for _, s := range r.c.DoTable {
 		cfg.IncludeTableRegex = f(cfg.IncludeTableRegex, s.DbName, s.TbName)
 	}
 
 	// replicate-ignore-db
-	for _, v := range r.c.IgnoreDB{
+	for _, v := range r.c.IgnoreDB {
 		cfg.ExcludeTableRegex = f(cfg.ExcludeTableRegex, v, "")
 	}
 
 	// replicate-ignore-table
-	for _, s := range r.c.IgnoreTable{
+	for _, s := range r.c.IgnoreTable {
 		cfg.ExcludeTableRegex = f(cfg.ExcludeTableRegex, s.DbName, s.TbName)
 	}
 
@@ -172,7 +180,7 @@ func (r *River) prepareCanal() error {
 }
 
 // Start the thread oriented to the target db
-func (r *River) PreStartSync()  {
+func (r *River) PreStartSync() {
 	// start manager
 	go r.ManagerLoop()
 
@@ -233,9 +241,9 @@ func (r *River) getRuleOrElse(db, table string) (*Rule, error) {
 	if !ok {
 		log.Infof("create rule for %v.%v", db, table)
 		err := r.updateRule(db, table)
-		if err != nil {
-			return nil, err
-		}else{
+		if err != nil && err.Error() != "table is not exist" {
+			return r.rules[ruleKey(db, table)], err
+		} else {
 			rule, _ = r.rules[ruleKey(db, table)]
 		}
 
@@ -246,7 +254,7 @@ func (r *River) getRuleOrElse(db, table string) (*Rule, error) {
 // get default rule
 func (r *River) newRule(db, table string) error {
 	key := ruleKey(db, table)
-	if _, ok := r.rules[key]; ok{
+	if _, ok := r.rules[key]; ok {
 		return errors.Errorf("duplicate source %s, %s defined in config", db, table)
 	}
 	r.rules[key] = newDefaultRule(db, table)
@@ -254,7 +262,7 @@ func (r *River) newRule(db, table string) error {
 }
 
 // According to the configuration to complete the table rules, determine whether to skip some dml operation
-func (r *River) updateSkipType(rule *Rule)  {
+func (r *River) updateSkipType(rule *Rule) {
 	for _, v := range r.c.SkipDmls {
 		if v.TbName == "" && v.DbName == "" {
 			rule.SkipType = v.Type
@@ -269,13 +277,9 @@ func (r *River) updateSkipType(rule *Rule)  {
 	}
 }
 
+// fixme 先映射 后加表信息
 // Update the rules when the table structure in mysql changes
 func (r *River) updateRule(db, table string) error {
-
-	tableInfo, err := r.canal.GetTable(db, table)
-	if err != nil && err.Error() != "table is not exist" {
-		return errors.Trace(err)
-	}
 
 	key := ruleKey(db, table)
 	delete(r.rules, key)
@@ -286,44 +290,46 @@ func (r *River) updateRule(db, table string) error {
 
 	// route-rules mapping
 	if r.c.RouteRules != nil {
-		for _, rule := range r.c.RouteRules{
+		for _, rule := range r.c.RouteRules {
 			if regexp.QuoteMeta(rule.Ptable) != rule.Ptable {
 				reg, err := regexp.Compile(rule.Pschema + "\\." + rule.Ptable)
-				if err != nil{
+				if err != nil {
 					return errors.Trace(err)
 				}
-				if reg.MatchString(ruleKey(db, table)){
+				if reg.MatchString(ruleKey(db, table)) {
 					r.rules[key].Tschema = rule.Tschema
 					r.rules[key].Ttable = rule.Ttable
 				}
-			}else if ruleKey(rule.Pschema, rule.Ptable) == ruleKey(db, table) {
+			} else if ruleKey(rule.Pschema, rule.Ptable) == ruleKey(db, table) {
 				r.rules[key].Tschema = rule.Tschema
 				r.rules[key].Ttable = rule.Ttable
-			}else if rule.Ptable == "" && rule.Pschema == r.rules[key].Tschema{
+			} else if rule.Ptable == "" && rule.Pschema == r.rules[key].Tschema {
 				r.rules[key].Tschema = rule.Tschema
 			}
 
 		}
 	}
 
-	if tableInfo != nil {
-		r.rules[key].TableInfo = tableInfo
+	tableInfo, err := r.canal.GetTable(db, table, r.rules[key].Tschema, r.rules[key].Ttable)
+	if err != nil {
+		return errors.Trace(err)
 	}
+	r.rules[key].TableInfo = tableInfo
 
 	return nil
 }
 
 // Create a rule collection for the first time by sweeping all the tables in the corresponding library in mysql
-func (r *River) parseSource() error  {
+func (r *River) parseSource() error {
 	//flagTables := make(map[string]int)
 
 	// replicate do-db
 	for _, s := range r.c.DoDB {
 		var sql string
-		if regexp.QuoteMeta(s) != s{
+		if regexp.QuoteMeta(s) != s {
 			sql = fmt.Sprintf(`SELECT table_schema,table_name FROM information_schema.tables 
 				WHERE table_schema RLIKE "%s";`, s)
-		}else{
+		} else {
 			sql = fmt.Sprintf(`SELECT table_schema,table_name FROM information_schema.tables 
 				WHERE table_schema = "%s";`, s)
 		}
@@ -345,11 +351,11 @@ func (r *River) parseSource() error  {
 	}
 
 	// replicate do-table
-	for _, t := range r.c.DoTable{
+	for _, t := range r.c.DoTable {
 		var sql string
-		if regexp.QuoteMeta(t.TbName) != t.TbName || regexp.QuoteMeta(t.DbName) != t.DbName{
+		if regexp.QuoteMeta(t.TbName) != t.TbName || regexp.QuoteMeta(t.DbName) != t.DbName {
 			sql = fmt.Sprintf(`SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema RLIKE "%s" AND table_name RLIKE "%s";`, t.DbName, t.TbName)
-		}else{
+		} else {
 			sql = fmt.Sprintf(`SELECT table_schema,table_name FROM information_schema.tables WHERE table_schema = "%s" AND table_name = "%s";`, t.DbName, t.TbName)
 		}
 
@@ -359,13 +365,13 @@ func (r *River) parseSource() error  {
 			return errors.Trace(err)
 		}
 
-		for i := 0; i < res.Resultset.RowNumber(); i++{
+		for i := 0; i < res.Resultset.RowNumber(); i++ {
 			dbname, _ := res.GetString(i, 0)
 			tbname, _ := res.GetString(i, 1)
-			if _, ok := r.rules[ruleKey(dbname, tbname)]; ok{
+			if _, ok := r.rules[ruleKey(dbname, tbname)]; ok {
 				log.Warnf("duplicate wildcard table defined for %s.%s", dbname, tbname)
 				continue
-			}else{
+			} else {
 				//flagTables[ruleKey(dbname, tbname)] = 1
 				err := r.newRule(dbname, tbname)
 				if err != nil {
@@ -383,43 +389,42 @@ func (r *River) parseSource() error  {
 }
 
 /**
-	1 Establish mappings based on configuration
-	2 Improve the primary key and field name ... in the rule according to the mysql source data information
- */
-func (r * River) prepareRule() error {
+1 Establish mappings based on configuration
+2 Improve the primary key and field name ... in the rule according to the mysql source data information
+*/
+func (r *River) prepareRule() error {
 	err := r.parseSource()
 	if err != nil {
 		return errors.Trace(err)
 	}
 
-
 	// route-rules: Establish mappings based on configuration
 	if r.c.RouteRules != nil {
-		for _, rule := range r.c.RouteRules{
+		for _, rule := range r.c.RouteRules {
 			if len(rule.Pschema) == 0 {
 				return errors.Errorf("empty schema not allowed for route-rules")
 			}
-			if regexp.QuoteMeta(rule.Pschema) != rule.Pschema{
+			if regexp.QuoteMeta(rule.Pschema) != rule.Pschema {
 				return errors.Errorf("regexp dbname is illegal : %s", rule.Pschema)
 			}
 			//errFlag := true
 			for k, v := range r.rules {
 				if regexp.QuoteMeta(rule.Ptable) != rule.Ptable {
 					reg, err := regexp.Compile(rule.Pschema + "\\." + rule.Ptable)
-					if err != nil{
+					if err != nil {
 						return errors.Trace(err)
 					}
-					if reg.MatchString(k){
+					if reg.MatchString(k) {
 						//errFlag = false
 						v.Tschema = rule.Tschema
 						v.Ttable = rule.Ttable
 
 					}
-				}else if ruleKey(rule.Pschema, rule.Ptable) == k {
+				} else if ruleKey(rule.Pschema, rule.Ptable) == k {
 					//errFlag = false
 					v.Tschema = rule.Tschema
 					v.Ttable = rule.Ttable
-				}else if rule.Ptable == "" && rule.Pschema == v.Pschema{
+				} else if rule.Ptable == "" && rule.Pschema == v.Pschema {
 					v.Tschema = rule.Tschema
 
 				}
@@ -430,11 +435,13 @@ func (r * River) prepareRule() error {
 		}
 	}
 
-	// Improve the primary key and field name ... in the rule according to the mysql source data information
-	for _, rule := range r.rules{
+	// Improve the primary key and field name ... in the rule according to the tidb data information
+	for _, rule := range r.rules {
 		// Whether it is defined in skipdml
 		r.updateSkipType(rule)
-		if rule.TableInfo, err = r.canal.GetTable(rule.Pschema, rule.Ptable); err != nil && err != canal.ErrExcludedTable{
+
+		rule.TableInfo, err = r.canal.GetTable(rule.Pschema, rule.Ptable, rule.Tschema, rule.Ttable)
+		if err != nil && err != canal.ErrExcludedTable && err.Error() != "table is not exist" {
 			return errors.Trace(err)
 		}
 
@@ -461,11 +468,11 @@ func (r *River) getConn() (*sql.DB, error) {
 }
 
 /**
-	manager thread: Accept the message of the sync thread, if it is a ddl message, send a barrier to the task thread,
-	start processing the ddl operation after receiving the message returned by all task threads, then send the save
-	point to the saver thread; if it is a dml message, send it to The corresponding task thread according to the hash key;
-	if it is a savepoint message, it is sent to all task threads.
- */
+manager thread: Accept the message of the sync thread, if it is a ddl message, send a barrier to the task thread,
+start processing the ddl operation after receiving the message returned by all task threads, then send the save
+point to the saver thread; if it is a dml message, send it to The corresponding task thread according to the hash key;
+if it is a savepoint message, it is sent to all task threads.
+*/
 func (r *River) ManagerLoop() {
 	r.wg.Add(1)
 
@@ -482,11 +489,11 @@ func (r *River) ManagerLoop() {
 		return
 	}
 
-	for{
+	for {
 		select {
-		case <- r.Ctx().Done():
+		case <-r.Ctx().Done():
 			return
-		case msg := <- r.syncCh:
+		case msg := <-r.syncCh:
 			switch msg.(type) {
 			case DmlMsg:
 				key := msg.(DmlMsg).Hashkey
@@ -502,26 +509,28 @@ func (r *River) ManagerLoop() {
 					c <- DdlBarrierMsg{}
 				}
 				for _, _ = range r.mCh {
-					<- r.barrierCh
+					<-r.barrierCh
 				}
 				sql := msg.(DdlMsg).Sql
 				err := ddlexec(db, &sql)
-				if err != nil{
+				if err != nil {
 					if strings.Contains(err.Error(), "Duplicate column name") || strings.Contains(err.Error(), "Duplicate key name") {
 						log.Infof("ddl execute duplicate sql=%v \n %v", sql, err)
-					}else{
+					} else {
 						log.Errorf("ddl execute error sql=%v \n %v", sql, err)
+						r.m2sCh <- DdlBarrierMsg{}
 						return
 					}
 				}
 				log.Debugf("ManagerLoop ddl %v", sql)
-				if msg.(DdlMsg).Pos != nil{
+				if msg.(DdlMsg).Pos != nil {
 					m := SaveBarrierMsg{
-						Force:true,
-						Pos:*(msg.(DdlMsg).Pos),
+						Force: true,
+						Pos:   *(msg.(DdlMsg).Pos),
 					}
 					r.saveCh <- m
 				}
+				r.m2sCh <- DdlBarrierMsg{}
 			case SaveBarrierMsg:
 				for _, c := range r.mCh {
 					c <- msg
@@ -533,12 +542,12 @@ func (r *River) ManagerLoop() {
 }
 
 /**
-	task thread:If DdlBarrierMsg sent by the manager thread is received, the cached dml operation is executed
-	immediately and then the manager is notified; if SaveBarrierMsg is received, the cached dml operation is immediately
-	executed and forwarded to the saver thread; if DmlMsg is received, it is cached and waiting to be executed.
- */
+task thread:If DdlBarrierMsg sent by the manager thread is received, the cached dml operation is executed
+immediately and then the manager is notified; if SaveBarrierMsg is received, the cached dml operation is immediately
+executed and forwarded to the saver thread; if DmlMsg is received, it is cached and waiting to be executed.
+*/
 
-func (r *River) TaskLoop(recChan <- chan Msg, i int) {
+func (r *River) TaskLoop(recChan <-chan Msg, i int) {
 	r.wg.Add(1)
 	defer func() {
 		log.Infof("task loop %v closed ", i)
@@ -557,7 +566,7 @@ func (r *River) TaskLoop(recChan <- chan Msg, i int) {
 	}
 
 	exec := func(db *sql.DB, msgArr *[]*DmlMsg) error {
-		if len(*msgArr) > 0{
+		if len(*msgArr) > 0 {
 			err := BatchInsert(db, msgArr)
 			if err != nil {
 				return err
@@ -570,19 +579,19 @@ func (r *River) TaskLoop(recChan <- chan Msg, i int) {
 
 	for {
 		select {
-		case <- r.Ctx().Done():
+		case <-r.Ctx().Done():
 			return
-		case <- time.After(3 * time.Second):
+		case <-time.After(3 * time.Second):
 			// prevent long time no message causes cached sql not executed
 			now := time.Now()
-			if now.Sub(lastSavedTime) > 1 * time.Second {
+			if now.Sub(lastSavedTime) > 1*time.Second {
 				err := exec(db, &msgArr)
 				if err != nil {
 					log.Errorf("dml execute error \n %v", err)
 					return
 				}
 			}
-		case msg := <- recChan:
+		case msg := <-recChan:
 			switch msg.(type) {
 			// ddl Barrier send to manager
 			case DdlBarrierMsg:
@@ -607,7 +616,7 @@ func (r *River) TaskLoop(recChan <- chan Msg, i int) {
 				log.Debugf("taskLoop dml %v %v", tmsg.SqlHead, tmsg.SqlVal)
 				msgArr = append(msgArr, &tmsg)
 				// exceed the batch size or exceed time, execute sql
-				if len(msgArr) >= r.c.Batch || now.Sub(lastSavedTime) > 1 * time.Second {
+				if len(msgArr) >= r.c.Batch || now.Sub(lastSavedTime) > 1*time.Second {
 					err := exec(db, &msgArr)
 					if err != nil {
 						log.Errorf("dml execute error \n %v", err)
@@ -621,10 +630,10 @@ func (r *River) TaskLoop(recChan <- chan Msg, i int) {
 }
 
 /**
-	saver thread: Receive savepoint information, if it is forced to save the information is executed immediately; if it
-	is normal information, it is cached, the same information receives the number of task threads then save savepoint.
- */
-func (r *River) SaverLoop()  {
+saver thread: Receive savepoint information, if it is forced to save the information is executed immediately; if it
+is normal information, it is cached, the same information receives the number of task threads then save savepoint.
+*/
+func (r *River) SaverLoop() {
 	r.wg.Add(1)
 	defer func() {
 		log.Infof("SaverLoop closed")
@@ -640,24 +649,24 @@ func (r *River) SaverLoop()  {
 	for {
 		needSavePos := false
 		select {
-		case <- r.Ctx().Done():
+		case <-r.Ctx().Done():
 			return
-		case msg := <- r.saveCh:
-			if msg.Force{
+		case msg := <-r.saveCh:
+			if msg.Force {
 				pos = msg.Pos
 				lastSavedTime = time.Now()
 				needSavePos = true
-			}else{
-				if _, ok := mBuf[msg.Flag]; !ok{
+			} else {
+				if _, ok := mBuf[msg.Flag]; !ok {
 					mBuf[msg.Flag] = &saveInfo{1, msg.Pos}
-				}else{
+				} else {
 					mBuf[msg.Flag].add()
 				}
-				if mBuf[msg.Flag].count == r.c.WorkerCount{
+				if mBuf[msg.Flag].count == r.c.WorkerCount {
 					pos = mBuf[msg.Flag].pos
 					delete(mBuf, msg.Flag)
 					now := time.Now()
-					if now.Sub(lastSavedTime) > 3 * time.Second {
+					if now.Sub(lastSavedTime) > 3*time.Second {
 						lastSavedTime = now
 						needSavePos = true
 					}
@@ -670,12 +679,10 @@ func (r *River) SaverLoop()  {
 				log.Errorf("save sync position %s err %v, close sync", pos, err)
 				r.cancel()
 				return
-			}else{
+			} else {
 				log.Debugf("save binlog_name = %v  pos = %v", pos.Name, pos.Pos)
 			}
 		}
 	}
 
 }
-
-

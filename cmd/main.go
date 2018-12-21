@@ -1,16 +1,16 @@
 package main
 
 import (
-	"runtime"
+	"flag"
+	"fmt"
+	"github.com/juju/errors"
+	log "github.com/sirupsen/logrus"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
-	"flag"
 	"tidb-syncer/river"
-	log "github.com/sirupsen/logrus"
-	"github.com/juju/errors"
 	"tidb-syncer/utils/logutil"
-	"fmt"
 )
 
 /**
@@ -39,46 +39,45 @@ Usage of syncer:
      指定 MySQL slave sever-id (默认 101)
   -status-addr string
       指定 syncer metric 信息; 如 `--status-addr 127:0.0.1:10088`
- */
+*/
 //Flag Names
 const (
-	logLevel			= "L"
-	version				= "V"
-	autoFixGtid			= "auto-fix-gtid"
-	batchSize			= "b"
-	threadCount			= "c"
-	configPath			= "config"
-	enableGtid			= "enable-gtid" //todo
-	logPath				= "log-file"
-	logRotate			= "log-rotate" //todo
-	metaPath			= "meta"
-	serverid			= "server-id"
-	statusAddr			= "status-addr"
-	isConsole			= "is_console"
+	logLevel    = "L"
+	version     = "V"
+	autoFixGtid = "auto-fix-gtid"
+	batchSize   = "b"
+	threadCount = "c"
+	configPath  = "config"
+	enableGtid  = "enable-gtid" //todo
+	logPath     = "log-file"
+	logRotate   = "log-rotate" //todo
+	metaPath    = "meta"
+	serverid    = "server-id"
+	statusAddr  = "status-addr"
+	isConsole   = "is_console"
 )
 
 var (
-	prt_version = flagBoolean(version, false, "print version information and exit")
-	config_file = flag.String(configPath, "config.toml", "tidb-syncer config file")
-	batch_size = flag.Int(batchSize, 0, "batch_size")
-	server_id = flag.Uint(serverid, 0, "MySQL server id, as a pseudo slave")
-	log_level = flag.String(logLevel, "", "log level")
-	log_file	= flag.String(logPath, "", "log file path")
-	log_rotate	= flag.String(logRotate, "", "log split")
+	prt_version  = flagBoolean(version, false, "print version information and exit")
+	config_file  = flag.String(configPath, "config.toml", "tidb-syncer config file")
+	batch_size   = flag.Int(batchSize, 0, "batch_size")
+	server_id    = flag.Uint(serverid, 0, "MySQL server id, as a pseudo slave")
+	log_level    = flag.String(logLevel, "", "log level")
+	log_file     = flag.String(logPath, "", "log file path")
+	log_rotate   = flag.String(logRotate, "", "log split")
 	thread_count = flag.Int(threadCount, 0, "thread count")
-	data_dir =	flag.String(metaPath, "", "meta file path")
-	status_addr = flag.String(statusAddr, "", "syncer metric info")
-	is_console = flag.Bool(isConsole, false, "log is or not in console")
+	data_dir     = flag.String(metaPath, "", "meta file path")
+	status_addr  = flag.String(statusAddr, "", "syncer metric info")
+	is_console   = flag.Bool(isConsole, false, "log is or not in console")
 )
 
-func main()  {
+func main() {
 
 	flag.Parse()
-	if *prt_version{
-		fmt.Println("v1.1.0")
+	if *prt_version {
+		fmt.Println("v1.1.1")
 		return
 	}
-
 
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc,
@@ -111,7 +110,6 @@ func main()  {
 
 	log.Debug(r)
 
-
 	// start worker thread
 	done := make(chan struct{}, 1)
 	go func() {
@@ -138,9 +136,9 @@ func main()  {
 }
 
 /**
-	Command line parameters override configuration file parameters
- */
-func overrideConfig(cfg *river.Config)  {
+Command line parameters override configuration file parameters
+*/
+func overrideConfig(cfg *river.Config) {
 	actualFlags := make(map[string]bool)
 
 	flag.Visit(func(f *flag.Flag) {
@@ -153,10 +151,10 @@ func overrideConfig(cfg *river.Config)  {
 	}
 
 	if actualFlags[logPath] {
-		cfg.LogPath	= *log_file
+		cfg.LogPath = *log_file
 	}
 
-	if actualFlags[logRotate] && (*log_rotate == "day" || *log_rotate == "hour"){
+	if actualFlags[logRotate] && (*log_rotate == "day" || *log_rotate == "hour") {
 		cfg.LogRotate = *log_rotate
 	}
 

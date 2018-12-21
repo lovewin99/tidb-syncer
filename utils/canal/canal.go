@@ -37,6 +37,7 @@ type Canal struct {
 
 	connLock sync.Mutex
 	conn     *client.Conn
+	dstconn  *client.Conn
 
 	tableLock          sync.RWMutex
 	tables             map[string]*schema.Table
@@ -46,7 +47,7 @@ type Canal struct {
 	includeTableRegex []*regexp.Regexp
 	excludeTableRegex []*regexp.Regexp
 
-	skipDdlRegex	[]*regexp.Regexp
+	skipDdlRegex []*regexp.Regexp
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -115,7 +116,7 @@ func NewCanal(cfg *Config) (*Canal, error) {
 
 	if len(cfg.SkipDdlRegex) > 0 {
 		for _, str := range cfg.SkipDdlRegex {
-			reg, err := regexp.Compile("(?i)"+str)
+			reg, err := regexp.Compile("(?i)" + str)
 			if err != nil {
 				return nil, errors.Trace(err)
 			}
@@ -222,7 +223,7 @@ func (c *Canal) run() error {
 		}
 	}
 
-	if err := c.runSyncBinlog(); err != nil &&  err.Error() != ErrCanceled.Error(){
+	if err := c.runSyncBinlog(); err != nil && err.Error() != ErrCanceled.Error() {
 		log.Errorf("canal start sync binlog err: %v", err)
 		return errors.Trace(err)
 	}
@@ -294,7 +295,7 @@ func (c *Canal) CheckTableMatch(key string) bool {
 	return matchFlag
 }
 
-func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
+func (c *Canal) GetTable(db string, table string, args ...string) (*schema.Table, error) {
 	key := fmt.Sprintf("%s.%s", db, table)
 	// if table is excluded, return error and skip parsing event or dump
 	if !c.CheckTableMatch(key) {
@@ -317,7 +318,14 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 		}
 	}
 
-	t, err := schema.NewTable(c, db, table)
+	var err error
+	if len(args) == 2 {
+		t, err = schema.NewTable(c, args[0], args[1])
+	} else {
+		log.Errorf("%v.%v %v", db, table, schema.ErrTableNotExist.Error())
+		return nil, schema.ErrTableNotExist
+	}
+
 	if err != nil {
 		// check table not exists
 		if ok, err1 := schema.IsTableExist(c, db, table); err1 == nil && !ok {
@@ -354,6 +362,9 @@ func (c *Canal) GetTable(db string, table string) (*schema.Table, error) {
 		}
 		return nil, err
 	}
+
+	t.Schema = db
+	t.Name = table
 
 	c.tableLock.Lock()
 	c.tables[key] = t
@@ -458,6 +469,37 @@ func (c *Canal) Execute(cmd string, args ...interface{}) (rr *mysql.Result, err 
 		} else if mysql.ErrorEqual(err, mysql.ErrBadConn) {
 			c.conn.Close()
 			c.conn = nil
+			continue
+		} else {
+			return
+		}
+	}
+	return
+}
+
+func (c *Canal) DstExecute(cmd string, args ...interface{}) (rr *mysql.Result, err error) {
+	c.connLock.Lock()
+	defer c.connLock.Unlock()
+
+	retryNum := 100
+	for i := 0; i < retryNum; i++ {
+		if c.dstconn == nil {
+			c.dstconn, err = client.Connect(c.cfg.DstAddr, c.cfg.DstUser, c.cfg.DstPassword, "")
+			if err != nil && strings.Contains(err.Error(), "connection refused") {
+				log.Infof("connect tidb retry 100 times: %v", i+1)
+				time.Sleep(3 * time.Second)
+				continue
+			} else if err != nil {
+				return nil, errors.Trace(err)
+			}
+		}
+
+		rr, err = c.dstconn.Execute(cmd, args...)
+		if err != nil && strings.Contains(err.Error(), "connection refused") {
+			log.Infof("connect tidb retry 100 times: %v", i+1)
+			time.Sleep(3 * time.Second)
+			c.dstconn.Close()
+			c.dstconn = nil
 			continue
 		} else {
 			return
